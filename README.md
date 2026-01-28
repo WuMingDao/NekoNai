@@ -19,6 +19,10 @@ http://localhost:3000
 
 This project is designed to run as a Discord "HTTP Interactions" endpoint. When deploying to Cloudflare Workers, you will need the following environment variables (stored as Workers secrets/vars).
 
+Worker entry/config:
+- `wrangler.jsonc` uses `main: "src/worker.ts"` and does NOT use `assets`.
+- Deploy with: `npx wrangler deploy` (do not pass `--assets`).
+
 ### Required (runtime)
 
 - `DISCORD_PUBLIC_KEY`
