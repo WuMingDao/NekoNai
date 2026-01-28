@@ -1,11 +1,13 @@
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
-import { NovelAI, Model, Resolution, Action } from "nekoai-js";
 import { ProxyAgent, setGlobalDispatcher } from "undici";
 import path from "path";
 import fs from "fs/promises";
+import { verifyDiscordRequest } from "./discord/verify.js";
+import { handleDiscordInteraction } from "./discord/handler.js";
+import { generateImage } from "./generate.js";
 
-// 图片保存目录
+// 图片保存目录（仅本地调试用）
 const IMAGES_DIR = path.join(import.meta.dirname, "../images");
 
 // 配置代理（读取环境变量）
@@ -17,53 +19,82 @@ if (proxyUrl) {
 
 const app = new Hono();
 
-// 从环境变量获取 NovelAI token
-const NAI_TOKEN = process.env.NAI_TOKEN;
+app.get("/", (c) => c.text("NekoNai OK"));
 
-app.get("/", (c) => {
-  return c.text("Hello Hono!");
-});
+function runInBackground(c: unknown, p: Promise<unknown>) {
+  const ctx = (c as { executionCtx?: { waitUntil(p: Promise<unknown>): void } })
+    .executionCtx;
+  if (ctx?.waitUntil) ctx.waitUntil(p);
+  else p.catch((err) => console.error(err));
+}
 
-// 生图 POST 端点
-app.post("/generate", async (c) => {
-  if (!NAI_TOKEN) {
-    return c.json({ error: "NAI_TOKEN environment variable not set" }, 500);
+// Discord Interactions 端点（HTTP Interactions）
+app.post("/interactions", async (c) => {
+  const publicKey = process.env.DISCORD_PUBLIC_KEY;
+  const appId = process.env.DISCORD_APP_ID;
+  const naiToken = process.env.NAI_TOKEN;
+
+  if (!publicKey) return c.text("DISCORD_PUBLIC_KEY not set", 500);
+  if (!appId) return c.text("DISCORD_APP_ID not set", 500);
+  if (!naiToken) return c.text("NAI_TOKEN not set", 500);
+
+  const { isValid, body } = await verifyDiscordRequest(c.req.raw, publicKey);
+  if (!isValid) return c.text("Invalid request signature", 401);
+
+  const interaction = JSON.parse(body) as unknown;
+  const type = (interaction as { type?: unknown }).type;
+
+  // PING -> PONG（Discord 用来验证端点可用性）
+  if (type === 1) return c.json({ type: 1 });
+
+  // APPLICATION_COMMAND
+  if (type === 2) {
+    runInBackground(c, handleDiscordInteraction(interaction, { appId, naiToken }));
+    return c.json({ type: 5 }); // DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE
   }
 
-  const body = await c.req.json().catch(() => ({}));
-  const prompt = body.prompt || "1girl, cute, anime style, detailed";
-  const seed = body.seed || Math.floor(Math.random() * 4294967295);
+  return c.json({
+    type: 4,
+    data: { content: `Unsupported interaction type: ${String(type)}` },
+  });
+});
 
-  const client = new NovelAI({ token: NAI_TOKEN });
+// 本地调试用生图 POST 端点（非 Discord 流程）
+app.post("/generate", async (c) => {
+  const naiToken = process.env.NAI_TOKEN;
+  if (!naiToken) return c.json({ error: "NAI_TOKEN not set" }, 500);
+
+  const body = (await c.req.json().catch(() => ({}))) as {
+    prompt?: unknown;
+    seed?: unknown;
+  };
+
+  const prompt =
+    typeof body.prompt === "string"
+      ? body.prompt
+      : "1girl, cute, anime style, detailed";
+  const seed =
+    typeof body.seed === "number"
+      ? body.seed
+      : Math.floor(Math.random() * 4294967295);
 
   try {
-    const images = (await client.generateImage({
+    const result = await generateImage({
+      token: naiToken,
       prompt,
-      model: Model.V4_5,
-      action: Action.GENERATE,
-      resPreset: Resolution.NORMAL_PORTRAIT,
-      n_samples: 1,
       seed,
-    })) as import("nekoai-js").Image[];
+    });
 
-    if (images.length === 0) {
-      return c.json({ error: "No image generated" }, 500);
-    }
-
-    // 返回 base64 图片数据
-    const image = images[0];
-    const base64 = image.toBase64();
-
-    // 保存图片到本地（手动实现，绕过 nekoai-js 的 ESM 兼容问题）
-    const savedPath = path.join(IMAGES_DIR, image.filename);
-    await fs.writeFile(savedPath, image.data);
+    // 保存图片到本地（仅用于你本机调试）
+    const savedPath = path.join(IMAGES_DIR, result.filename);
+    await fs.writeFile(savedPath, result.data);
     console.log(`Image saved to: ${savedPath}`);
 
     return c.json({
       success: true,
-      seed,
+      seed: result.seed,
       prompt,
-      image: base64,
+      image: result.base64,
       savedPath,
     });
   } catch (err) {
