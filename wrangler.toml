@@ -1,0 +1,5 @@
+name = "nekonai"
+main = "src/worker.ts"
+compatibility_date = "2026-01-28"
+compatibility_flags = ["nodejs_compat"]
+

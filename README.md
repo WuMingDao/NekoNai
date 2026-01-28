@@ -21,6 +21,7 @@ This project is designed to run as a Discord "HTTP Interactions" endpoint. When 
 
 Worker entry/config:
 - `wrangler.jsonc` uses `main: "src/worker.ts"` and does NOT use `assets`.
+- (Compat) `wrangler.toml` is also provided in case your deploy environment doesn't pick up `wrangler.jsonc`.
 - Deploy with: `npx wrangler deploy` (do not pass `--assets`).
 
 ### Required (runtime)
